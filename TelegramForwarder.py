@@ -15,7 +15,7 @@ PHONE = "+918074526151"
 
 SOURCE_GROUP = '@telugusubforsubtelugusub4subtelu'
 DESTINATION_CHAT = '@DiscountDiveX'
-MAX_INVITES_PER_RUN = 3
+MAX_INVITES_PER_RUN = 10  # changed from 3 to 10
 MIN_SLEEP_BETWEEN_INVITES = 10
 MAX_SLEEP_BETWEEN_INVITES = 25
 DATA_FILE = 'invited_users.json'
@@ -32,7 +32,7 @@ async def load_invited(path: Path):
 async def save_invited(path: Path, invited_set):
     path.write_text(json.dumps(list(invited_set), indent=2))
 
-async def main():
+async def invite_once():
     client = TelegramClient('session_' + PHONE, API_ID, API_HASH)
     await client.connect()
     if not await client.is_user_authorized():
@@ -43,42 +43,25 @@ async def main():
             pw = input('Two-step password: ')
             await client.sign_in(password=pw)
 
-    # Resolve entities
     try:
         src = await client.get_entity(SOURCE_GROUP)
-    except Exception as e:
-        print(f"❌ Could not resolve source group '{SOURCE_GROUP}': {e}")
-        await client.disconnect()
-        return
-
-    try:
         dest = await client.get_entity(DESTINATION_CHAT)
     except Exception as e:
-        print(f"❌ Could not resolve destination '{DESTINATION_CHAT}': {e}")
+        print(f"❌ Could not resolve entities: {e}")
         await client.disconnect()
         return
 
     data_path = Path(DATA_FILE)
     invited = await load_invited(data_path)
 
-    # Collect eligible members from source group
     members = []
-    try:
-        async for u in client.iter_participants(src):
-            if getattr(u, 'bot', False):
-                continue
-            if u.is_self:
-                continue
-            uid = getattr(u, 'id', None)
-            if uid is None:
-                continue
-            if uid in invited:
-                continue
-            members.append(u)
-    except Exception as e:
-        print(f"❌ Error while fetching participants: {e}")
-        await client.disconnect()
-        return
+    async for u in client.iter_participants(src):
+        if getattr(u, 'bot', False) or u.is_self:
+            continue
+        uid = getattr(u, 'id', None)
+        if uid is None or uid in invited:
+            continue
+        members.append(u)
 
     if not members:
         print("ℹ️ No eligible members found to invite.")
@@ -90,34 +73,34 @@ async def main():
 
     for user in to_invite:
         uid = user.id
-        username_or_name = getattr(user, 'username', None) or f"{user.first_name or ''} {user.last_name or ''}".strip()
+        name = getattr(user, 'username', None) or f"{user.first_name or ''} {user.last_name or ''}".strip()
         try:
-            print(f"➤ Inviting {username_or_name} (id={uid})...")
             await client(InviteToChannelRequest(channel=dest, users=[user]))
             invited.add(uid)
-            print(f"✅ Invited {username_or_name}")
-        except errors.UserPrivacyRestrictedError:
-            print(f"⚠️ Privacy restriction for {uid}")
-            invited.add(uid)
-        except errors.UserAlreadyParticipantError:
-            print(f"ℹ️ {uid} is already in destination. Marking as invited.")
+            print(f"✅ Invited {name}")
+        except (errors.UserPrivacyRestrictedError, errors.UserAlreadyParticipantError):
             invited.add(uid)
         except errors.FloodWaitError as fw:
-            print(f"⛔ Flood wait: {fw.seconds} seconds. Exiting to be safe.")
+            print(f"⛔ Flood wait {fw.seconds}s. Exiting to be safe.")
             await save_invited(data_path, invited)
             await client.disconnect()
             return
         except Exception as e:
             print(f"❌ Failed to invite {uid}: {type(e).__name__}: {e}")
 
-        s = random.randint(MIN_SLEEP_BETWEEN_INVITES, MAX_SLEEP_BETWEEN_INVITES)
-        print(f"⏱ Sleeping {s} seconds before next invite...")
-        time.sleep(s)
+        time.sleep(random.randint(MIN_SLEEP_BETWEEN_INVITES, MAX_SLEEP_BETWEEN_INVITES))
 
     await save_invited(data_path, invited)
     print("💾 Saved invited user list.")
     await client.disconnect()
     print("✅ Done for this run.")
+
+async def main():
+    while True:
+        print(f"=== Starting daily invite run at {time.ctime()} ===")
+        await invite_once()
+        print("=== Sleeping 24 hours until next run ===")
+        await asyncio.sleep(86400)  # 24 hours
 
 if __name__ == "__main__":
     asyncio.run(main())
